@@ -26,6 +26,7 @@ This is for any other collaborator by the way.
 """
 
 import os
+import re                            # Regular expressions: patterns for checking and cleaning text
 import time                          # Lets us pause between retries
 from typing import Literal           # Restricts a field to a fixed list of allowed values
 
@@ -50,6 +51,11 @@ RETRY_WAIT_SECONDS = 2
 # Error codes worth retrying: 429 = too many requests, 5xx = server problems.
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 
+# What counts as a valid word: letters, optionally joined by one hyphen,
+# apostrophe or space, e.g. "bank", "mother-in-law", "don't", "ice cream".
+WORD_PATTERN = re.compile(r"[a-z]+(?:[-' ][a-z]+)*")
+MAX_WORD_LENGTH = 40
+
 
 class AIServiceError(Exception):
     """Raised when Gemini can't create content (no key, no internet, server busy...).
@@ -67,6 +73,50 @@ def _friendly_message(error):
     if error.code >= 500:
         return "The AI service is busy right now. Please try again in a few minutes."
     return f"The AI request failed (error {error.code})."
+
+
+def _clean_word(word):
+    """Tidy a word ("  Bank " -> "bank") and check it's valid.
+
+    Raises ValueError with a friendly message if it isn't.
+    """
+    word = " ".join(str(word).split()).lower()  # remove extra spaces, make lowercase
+    if not word:
+        raise ValueError("Please enter a word.")
+    if len(word) > MAX_WORD_LENGTH or not WORD_PATTERN.fullmatch(word):
+        raise ValueError(f"'{word}' doesn't look like a word. Please use letters only.")
+    return word
+
+
+def _clean_text(text):
+    """Remove markdown symbols (** * ` #) and extra spaces from Gemini's text.
+
+    Underscores are kept on purpose: fill-in-the-blank questions use ____.
+    """
+    text = re.sub(r"[*`#]+", "", text)        # remove the symbols
+    return re.sub(r"\s+", " ", text).strip()  # squash repeated spaces into one
+
+
+def _is_good_question(question):
+    """A usable question has 4 different options, and the answer is one of them."""
+    options = question["options"]
+    return (
+        len(options) == 4
+        and len(set(options)) == 4  # no repeated options
+        and question["correct_answer"] in options
+    )
+
+
+def _fallback_content(word, definition, message):
+    """Backup learning content, used when the AI can't help."""
+    return {
+        "word": word,
+        "explanation": definition or "AI explanation is not available right now.",
+        "examples": [],
+        "memory_trick": "",
+        "source": "fallback",
+        "error": message,
+    }
 
 
 class LearningContent(BaseModel):
@@ -191,8 +241,16 @@ class AIContentGenerator:
         Never raises an error: if Gemini fails, it returns backup content
         with "source": "fallback". The explanation is then the dictionary
         definition (if one was given), "examples" is an empty list and
-        "memory_trick" is an empty string.
+        "memory_trick" is an empty string. An invalid word (empty, numbers,
+        symbols) also returns fallback content, with the reason in "error".
+        The word is returned tidied and lowercase ("  Bank " -> "bank").
         """
+        # Check the word first, so we don't waste a Gemini request on it.
+        try:
+            word = _clean_word(word)
+        except ValueError as error:
+            return _fallback_content(word, definition, str(error))
+
         # Build the request. If the dictionary module found a definition,
         # include it so Gemini explains the same meaning.
         prompt = f"Create learning content for the word '{word}'."
@@ -203,14 +261,12 @@ class AIContentGenerator:
             content = self._ask_gemini(prompt, LearningContent)
         except AIServiceError as error:
             # The AI failed: return backup content so the app keeps working.
-            return {
-                "word": word,
-                "explanation": definition or "AI explanation is not available right now.",
-                "examples": [],
-                "memory_trick": "",
-                "source": "fallback",
-                "error": str(error),
-            }
+            return _fallback_content(word, definition, str(error))
+
+        # Remove stray markdown (like **bold**) and extra spaces from Gemini's text.
+        content["explanation"] = _clean_text(content["explanation"])
+        content["examples"] = [_clean_text(example) for example in content["examples"]]
+        content["memory_trick"] = _clean_text(content["memory_trick"])
 
         # Add keys Gemini doesn't need to fill in, because we already know them.
         content["word"] = word
@@ -236,15 +292,31 @@ class AIContentGenerator:
                 "correct_answer" (str): the right option, exactly as written in "options"
                 "explanation" (str): one sentence explaining the answer
 
+            Questions that fail the quality check (not 4 different options,
+            or an answer that isn't one of them) are removed, so the list
+            may be shorter than num_questions. Invalid words are skipped.
+
         Raises:
             AIServiceError: if the quiz can't be created (no key, no internet,
-                AI busy...). The message can be shown to the user, e.g.:
+                AI busy, no valid words, no usable questions...). The message
+                can be shown to the user, e.g.:
 
                     try:
                         questions = generator.generate_quiz(words)
                     except AIServiceError as error:
                         st.error(str(error))
         """
+        # Keep only the valid words (tidied), and skip the rest.
+        valid_words = []
+        for word in words:
+            try:
+                valid_words.append(_clean_word(word))
+            except ValueError:
+                pass  # not a real word, so leave it out of the quiz
+        if not valid_words:
+            raise AIServiceError("There are no valid words to make a quiz from.")
+        words = valid_words
+
         # Build the request: which words, how many questions, and the rules.
         prompt = (
             f"Create {num_questions} multiple-choice quiz questions to test these words: "
@@ -262,8 +334,19 @@ class AIContentGenerator:
 
         quiz = self._ask_gemini(prompt, Quiz)
 
-        # Unwrap the list from the Quiz form, so callers get a plain list.
-        return quiz["questions"]
+        # Clean each question's text, then keep only the good questions.
+        good_questions = []
+        for question in quiz["questions"]:  # unwrap the list from the Quiz form
+            question["question"] = _clean_text(question["question"])
+            question["options"] = [_clean_text(option) for option in question["options"]]
+            question["correct_answer"] = _clean_text(question["correct_answer"])
+            question["explanation"] = _clean_text(question["explanation"])
+            if _is_good_question(question):
+                good_questions.append(question)
+
+        if not good_questions:
+            raise AIServiceError("The AI couldn't create usable quiz questions. Please try again.")
+        return good_questions
 
 
 # This block only runs when the file is run directly
