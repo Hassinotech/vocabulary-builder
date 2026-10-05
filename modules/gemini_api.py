@@ -26,13 +26,14 @@ This is for any other collaborator by the way.
 """
 
 import os
+from typing import Literal           # Restricts a field to a fixed list of allowed values
 
 from google import genai             # Google's official Gemini library
 from google.genai import types       # Ready-made "forms" for Gemini request settings
 from pydantic import BaseModel, Field  # Lets us describe the exact shape of Gemini's answer
 
 # The Gemini model we use. Change it here only, and every request will use it.
-DEFAULT_MODEL = "gemini-3.7-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
 # A standing instruction that tells Gemini who to be for every request.
 TUTOR_INSTRUCTION = (
@@ -49,6 +50,30 @@ class LearningContent(BaseModel):
     explanation: str = Field(description="A simple 1-2 sentence explanation in plain English.")
     examples: list[str] = Field(description="Exactly 3 example sentences using the word.")
     memory_trick: str = Field(description="A short, memorable trick for remembering the meaning.")
+
+
+class QuizQuestion(BaseModel):
+    """The shape of one multiple choice quiz question."""
+
+    word: str = Field(description="The vocabulary word this question tests.")
+    # Literal means Gemini must pick exactly one of these three values.
+    question_type: Literal["meaning", "fill_in_the_blank", "synonym"] = Field(
+        description="The kind of question."
+    )
+    question: str = Field(
+        description="The question text. For fill_in_the_blank, use ____ for the missing word."
+    )
+    options: list[str] = Field(description="Exactly 4 answer options.")
+    # Stored as text (not a position) so it stays correct if the options are shuffled.
+    correct_answer: str = Field(description="The correct option, copied exactly from options.")
+    explanation: str = Field(description="One simple sentence explaining why the answer is correct.")
+
+
+class Quiz(BaseModel):
+    """A list of quiz questions (Gemini fills in the whole list in one go)."""
+
+    # A form inside a form: a list of QuizQuestion forms.
+    questions: list[QuizQuestion]
 
 
 class AIContentGenerator:
@@ -119,6 +144,44 @@ class AIContentGenerator:
         content["source"] = "ai"  # tells the UI this came from the AI
         return content
 
+    def generate_quiz(self, words, definitions=None, num_questions=5):
+        """Create multiple choice quiz questions for a list of words.
+
+        Args:
+            words (list[str]): The words to test, e.g. ["resilient", "bank"].
+            definitions (dict, optional): Word -> definition from the dictionary
+                module, e.g. {"bank": "the land along the side of a river"}.
+            num_questions (int): How many questions to create (default 5).
+
+        Returns:
+            list of dicts, one per question, each with these keys:
+                "word" (str): the word being tested
+                "question_type" (str): "meaning", "fill_in_the_blank" or "synonym"
+                "question" (str): the question text
+                "options" (list[str]): 4 answer options
+                "correct_answer" (str): the right option, exactly as written in "options"
+                "explanation" (str): one sentence explaining the answer
+        """
+        # Build the request: which words, how many questions, and the rules.
+        prompt = (
+            f"Create {num_questions} multiple-choice quiz questions to test these words: "
+            f"{', '.join(words)}.\n"
+            "Mix the question types: meaning, fill_in_the_blank and synonym.\n"
+            "Each question must have exactly 4 options, and correct_answer must be "
+            "copied exactly from the options."
+        )
+        # If the dictionary module gave us definitions, add one line per word
+        # so the questions test the same meanings the user saw.
+        if definitions:
+            prompt += "\nUse these meanings from the dictionary:"
+            for word, meaning in definitions.items():
+                prompt += f"\n- {word}: {meaning}"
+
+        quiz = self._ask_gemini(prompt, Quiz)
+
+        # Unwrap the list from the Quiz form, so callers get a plain list.
+        return quiz["questions"]
+
 
 # This block only runs when the file is run directly
 # (python modules/gemini_api.py), not when another module imports it.
@@ -129,3 +192,12 @@ if __name__ == "__main__":
         "bank", definition="the land along the side of a river"
     )
     print(content)
+
+    # Test the quiz: print each question with its options and answer.
+    questions = generator.generate_quiz(["resilient", "bank", "creation"])
+    for q in questions:
+        print()
+        print(f"[{q['question_type']}] {q['question']}")
+        for option in q["options"]:
+            print("   -", option)
+        print("   Answer:", q["correct_answer"])
