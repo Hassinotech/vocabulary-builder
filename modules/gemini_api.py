@@ -25,8 +25,9 @@ and restart VS Code / the terminal so it can see the new variable.
 This is for any other collaborator by the way.
 """
 
+import copy                          # Makes independent copies of saved answers
 import os
-import re                            # Regular expressions: patterns for checking and cleaning text
+import re                          # Regular expressions: patterns for checking and cleaning text
 import time                          # Lets us pause between retries
 from typing import Literal           # Restricts a field to a fixed list of allowed values
 
@@ -154,7 +155,16 @@ class Quiz(BaseModel):
 
 
 class AIContentGenerator:
-    """Creates vocabulary learning content using Google's Gemini AI."""
+    """Creates vocabulary learning content using Google's Gemini AI.
+
+    Learning content is cached (saved) inside this object, so asking for the
+    same word twice only uses Gemini once. Streamlit reruns app.py on every
+    click, so create the generator ONCE, or the cache will always be empty:
+
+        @st.cache_resource
+        def get_generator():
+            return AIContentGenerator()
+    """
 
     def __init__(self, model_name=DEFAULT_MODEL):
         # Read the key from the environment, so it never appears in this file.
@@ -168,6 +178,9 @@ class AIContentGenerator:
             # with a clear message instead.
             self.client = None
         self.model_name = model_name
+
+        # Saved answers: (word, definition) -> learning content.
+        self._cache = {}
 
     def _ask_gemini(self, prompt, schema):
         """Send a prompt to Gemini and return its reply as a Python dictionary.
@@ -251,6 +264,11 @@ class AIContentGenerator:
         except ValueError as error:
             return _fallback_content(word, definition, str(error))
 
+        # Already asked about this word (with this definition)? Reuse the saved answer.
+        cache_key = (word, definition)
+        if cache_key in self._cache:
+            return copy.deepcopy(self._cache[cache_key])
+
         # Build the request. If the dictionary module found a definition,
         # include it so Gemini explains the same meaning.
         prompt = f"Create learning content for the word '{word}'."
@@ -272,6 +290,9 @@ class AIContentGenerator:
         content["word"] = word
         content["source"] = "ai"  # tells the UI this came from the AI
         content["error"] = None   # same keys as the fallback, so callers can always check it
+
+        # Save a copy for next time. Only real AI answers are saved, never fallbacks.
+        self._cache[cache_key] = copy.deepcopy(content)
         return content
 
     def generate_quiz(self, words, definitions=None, num_questions=5):
