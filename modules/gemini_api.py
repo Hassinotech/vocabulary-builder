@@ -26,9 +26,12 @@ This is for any other collaborator by the way.
 """
 
 import os
+import time                          # Lets us pause between retries
 from typing import Literal           # Restricts a field to a fixed list of allowed values
 
+import httpx                         # The internet library google-genai uses (for "no internet" errors)
 from google import genai             # Google's official Gemini library
+from google.genai import errors      # Gemini's error types
 from google.genai import types       # Ready-made "forms" for Gemini request settings
 from pydantic import BaseModel, Field  # Lets us describe the exact shape of Gemini's answer
 
@@ -40,6 +43,30 @@ TUTOR_INSTRUCTION = (
     "You are a friendly vocabulary tutor for English learners. "
     "Use simple, everyday English and avoid difficult words in your explanations."
 )
+
+# How many times to try a request before giving up, and how long to wait.
+MAX_ATTEMPTS = 3
+RETRY_WAIT_SECONDS = 2
+# Error codes worth retrying: 429 = too many requests, 5xx = server problems.
+RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+
+
+class AIServiceError(Exception):
+    """Raised when Gemini can't create content (no key, no internet, server busy...).
+
+    The message is written so it can be shown directly to the user.
+    """
+
+
+def _friendly_message(error):
+    """Turn a Gemini APIError into a message a user can understand."""
+    if "API key" in str(error):
+        return "The Gemini API key is not valid. Please check the GEMINI_API_KEY setting."
+    if error.code == 429:
+        return "The AI's free usage limit has been reached. Please wait a bit and try again."
+    if error.code >= 500:
+        return "The AI service is busy right now. Please try again in a few minutes."
+    return f"The AI request failed (error {error.code})."
 
 
 class LearningContent(BaseModel):
@@ -84,7 +111,12 @@ class AIContentGenerator:
         api_key = os.environ.get("GEMINI_API_KEY")
 
         # Create the connection to Gemini once and reuse it for every request.
-        self.client = genai.Client(api_key=api_key)
+        if api_key:
+            self.client = genai.Client(api_key=api_key)
+        else:
+            # Without a key, don't crash the app. Each request will fail
+            # with a clear message instead.
+            self.client = None
         self.model_name = model_name
 
     def _ask_gemini(self, prompt, schema):
@@ -93,26 +125,50 @@ class AIContentGenerator:
         `schema` is a Pydantic model class describing the shape of the reply.
         The leading underscore means this is an internal helper: other modules
         should call the public methods below instead.
+
+        Raises:
+            AIServiceError: if Gemini can't be reached or gives an unusable answer.
         """
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                # Give Gemini its "friendly tutor" role.
-                system_instruction=TUTOR_INSTRUCTION,
-                # We don't let Gemini call Python functions, so turn this
-                # feature off (this also hides a warning from the library).
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    disable=True
-                ),
-                # Ask for JSON that follows the shape described by `schema`.
-                response_mime_type="application/json",
-                response_schema=schema,
-            ),
-        )
-        # The library turns the JSON into a `schema` object for us;
-        # model_dump() then turns that object into a plain dictionary.
-        return response.parsed.model_dump()
+        if self.client is None:
+            raise AIServiceError("No Gemini API key found. Please set GEMINI_API_KEY.")
+
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        # Give Gemini its "friendly tutor" role.
+                        system_instruction=TUTOR_INSTRUCTION,
+                        # We don't let Gemini call Python functions, so turn this
+                        # feature off (this also hides a warning from the library).
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
+                        # Ask for JSON that follows the shape described by `schema`.
+                        response_mime_type="application/json",
+                        response_schema=schema,
+                    ),
+                )
+            except errors.APIError as error:
+                # Busy server or rate limit, and we still have tries left: wait, then retry.
+                if error.code in RETRY_STATUS_CODES and attempt < MAX_ATTEMPTS:
+                    time.sleep(RETRY_WAIT_SECONDS * attempt)  # wait 2s, then 4s
+                    continue
+                raise AIServiceError(_friendly_message(error)) from error
+            except httpx.TransportError as error:
+                raise AIServiceError(
+                    "Could not reach the AI service. Please check your internet connection."
+                ) from error
+
+            # We only reach this point if the request worked.
+            # If Gemini's JSON didn't match the form, the library leaves parsed empty.
+            if response.parsed is None:
+                raise AIServiceError("The AI sent back an answer in the wrong format.")
+
+            # The library turns the JSON into a `schema` object for us;
+            # model_dump() then turns that object into a plain dictionary.
+            return response.parsed.model_dump()
 
     def get_learning_content(self, word, definition=None):
         """Create simple learning content for one word.
@@ -128,8 +184,14 @@ class AIContentGenerator:
                 "explanation" (str): 1-2 simple sentences
                 "examples" (list[str]): 3 example sentences
                 "memory_trick" (str): a trick for remembering the meaning
-                "source" (str): "ai" (may also be "fallback" once error
-                    handling is added)
+                "source" (str): "ai" if Gemini created it, "fallback" if not
+                "error" (str or None): None if it worked, otherwise a
+                    message you can show the user
+
+        Never raises an error: if Gemini fails, it returns backup content
+        with "source": "fallback". The explanation is then the dictionary
+        definition (if one was given), "examples" is an empty list and
+        "memory_trick" is an empty string.
         """
         # Build the request. If the dictionary module found a definition,
         # include it so Gemini explains the same meaning.
@@ -137,11 +199,23 @@ class AIContentGenerator:
         if definition:
             prompt += f"\nUse this meaning from the dictionary: {definition}"
 
-        content = self._ask_gemini(prompt, LearningContent)
+        try:
+            content = self._ask_gemini(prompt, LearningContent)
+        except AIServiceError as error:
+            # The AI failed: return backup content so the app keeps working.
+            return {
+                "word": word,
+                "explanation": definition or "AI explanation is not available right now.",
+                "examples": [],
+                "memory_trick": "",
+                "source": "fallback",
+                "error": str(error),
+            }
 
-        # Add two keys Gemini doesn't need to fill in, because we already know them.
+        # Add keys Gemini doesn't need to fill in, because we already know them.
         content["word"] = word
         content["source"] = "ai"  # tells the UI this came from the AI
+        content["error"] = None   # same keys as the fallback, so callers can always check it
         return content
 
     def generate_quiz(self, words, definitions=None, num_questions=5):
@@ -161,6 +235,15 @@ class AIContentGenerator:
                 "options" (list[str]): 4 answer options
                 "correct_answer" (str): the right option, exactly as written in "options"
                 "explanation" (str): one sentence explaining the answer
+
+        Raises:
+            AIServiceError: if the quiz can't be created (no key, no internet,
+                AI busy...). The message can be shown to the user, e.g.:
+
+                    try:
+                        questions = generator.generate_quiz(words)
+                    except AIServiceError as error:
+                        st.error(str(error))
         """
         # Build the request: which words, how many questions, and the rules.
         prompt = (
