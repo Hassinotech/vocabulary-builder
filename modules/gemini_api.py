@@ -372,19 +372,49 @@ class AIContentGenerator:
 
 # This block only runs when the file is run directly
 # (python modules/gemini_api.py), not when another module imports it.
-# Use it to quickly test the module on its own.
+# It demonstrates every feature and uses only 2 Gemini requests.
 if __name__ == "__main__":
     generator = AIContentGenerator()
+
+    # 1. Learning content, using a dictionary definition
+    print("=== 1. Learning content for 'bank' (river meaning) ===")
     content = generator.get_learning_content(
         "bank", definition="the land along the side of a river"
     )
-    print(content)
+    print("Source:      ", content["source"])
+    if content["error"]:
+        print("Error:       ", content["error"])
+    print("Explanation: ", content["explanation"])
+    for example in content["examples"]:
+        print("  -", example)
+    print("Memory trick:", content["memory_trick"])
 
-    # Test the quiz: print each question with its options and answer.
-    questions = generator.generate_quiz(["resilient", "bank", "creation"])
-    for q in questions:
-        print()
-        print(f"[{q['question_type']}] {q['question']}")
-        for option in q["options"]:
-            print("   -", option)
-        print("   Answer:", q["correct_answer"])
+    # 2. Caching: the same word again should be instant
+    print("\n=== 2. Same word again (from the cache) ===")
+    start = time.perf_counter()  # a stopwatch
+    generator.get_learning_content(
+        "  BANK ", definition="the land along the side of a river"
+    )
+    print(f"Took {time.perf_counter() - start:.3f} seconds (no Gemini request)")
+
+    # 3. Validation: an invalid word never reaches Gemini
+    print("\n=== 3. Invalid word ===")
+    bad = generator.get_learning_content("123")
+    print("Source:", bad["source"], "| Error:", bad["error"])
+
+    # 4. Quiz, with error handling (this is how the quiz module should call it)
+    print("\n=== 4. Quiz ===")
+    try:
+        questions = generator.generate_quiz(
+            ["resilient", "bank", "creation"],
+            definitions={"bank": "the land along the side of a river"},
+        )
+    except AIServiceError as error:
+        print("Could not create the quiz:", error)
+    else:  # only runs if no error happened
+        for number, q in enumerate(questions, start=1):
+            print(f"\nQ{number} [{q['question_type']}] {q['question']}")
+            for option in q["options"]:
+                print("   -", option)
+            print("   Answer:", q["correct_answer"])
+            print("   Why:   ", q["explanation"])
