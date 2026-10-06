@@ -39,12 +39,13 @@ for key, default in {
     "quiz_result": None,    # the score once submitted
     "quiz_answers": None,
     "quiz_id": 0,           # changes per quiz, so old answers don't carry over
+    "search_requested": False,  # set by pressing Enter or clicking Search
 }.items():
     st.session_state.setdefault(key, default)
 
 # ------ Main title and subtitle ------
 
-st.title("Vocabulary Builder & Smart Flashcard App")
+st.title("Vocabulary Builder App")
 st.write("Search a word, learn it with AI help, save it as a flashcard, review it and test yourself.")
 
 data.load()
@@ -84,11 +85,20 @@ def save_flashcard(word):
 with tab1:
     st.header("🔎 Dictionary search")
 
-    with st.form("search_form"):
-        query = st.text_input("Enter a word to search", placeholder="e.g. resilient")
-        searched = st.form_submit_button("Search")
+    def request_search():
+        st.session_state.search_requested = True
 
-    if searched:
+    # Pressing Enter in the box (on_change) or clicking Search both start a search.
+    query = st.text_input(
+        "Enter a word to search",
+        placeholder="e.g. resilient",
+        on_change=request_search,
+    )
+    if st.button("Search"):
+        request_search()
+
+    if st.session_state.search_requested:
+        st.session_state.search_requested = False
         try:
             with st.spinner("Looking up the word..."):
                 st.session_state.word = dictionary.lookup(query)
@@ -105,8 +115,6 @@ with tab1:
         st.subheader(word.text)
         if word.phonetic:
             st.write(f"**Phonetics:** {word.phonetic}")
-        if word.audio_url:
-            st.audio(word.audio_url)
 
         for meaning in word.meanings:
             st.markdown(f"**{meaning['part_of_speech']}**")

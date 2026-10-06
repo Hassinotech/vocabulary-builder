@@ -32,7 +32,6 @@ class Word:
 
     text: str
     phonetic: str = ""
-    audio_url: str = ""
     # One dict per part of speech:
     # {"part_of_speech": "noun", "definitions": [{"definition": ..., "example": ...}]}
     meanings: list = field(default_factory=list)
@@ -109,14 +108,12 @@ class DictionaryClient:
         """Turn the API's JSON (a list of entries) into one Word."""
         result = Word(text=word)
         for entry in entries:
-            # Phonetic text and pronunciation audio: keep the first ones found.
+            # Phonetic text: keep the first one found.
             if not result.phonetic:
                 result.phonetic = entry.get("phonetic", "")
             for phonetic in entry.get("phonetics", []):
                 if not result.phonetic and phonetic.get("text"):
                     result.phonetic = phonetic["text"]
-                if not result.audio_url and phonetic.get("audio"):
-                    result.audio_url = phonetic["audio"]
 
             for meaning in entry.get("meanings", []):
                 definitions = [
