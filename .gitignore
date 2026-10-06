@@ -1,0 +1,10 @@
+# Python's automatic speed-up files (created on every computer, never commit)
+__pycache__/
+*.pyc
+
+# Secret keys, if anyone ever keeps them in a .env file
+.env
+
+# Virtual environment folders
+.venv/
+venv/
