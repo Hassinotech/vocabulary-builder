@@ -13,6 +13,12 @@ from modules.validation import InvalidWordError
 
 st.set_page_config(page_title="Vocabulary Builder", page_icon="📚")
 
+# Hide Streamlit's "Press Enter to apply" hint under text boxes.
+st.markdown(
+    "<style>[data-testid='InputInstructions'] { display: none; }</style>",
+    unsafe_allow_html=True,
+)
+
 
 # ------ Create the helpers once ------
 # Streamlit reruns this file on every click. st.cache_resource keeps these
