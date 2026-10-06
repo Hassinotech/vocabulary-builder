@@ -13,12 +13,6 @@ from modules.validation import InvalidWordError
 
 st.set_page_config(page_title="Vocabulary Builder", page_icon="📚")
 
-# Hide Streamlit's "Press Enter to apply" hint under text boxes.
-st.markdown(
-    "<style>[data-testid='InputInstructions'] { display: none; }</style>",
-    unsafe_allow_html=True,
-)
-
 
 # ------ Create the helpers once ------
 # Streamlit reruns this file on every click. st.cache_resource keeps these
@@ -45,7 +39,6 @@ for key, default in {
     "quiz_result": None,    # the score once submitted
     "quiz_answers": None,
     "quiz_id": 0,           # changes per quiz, so old answers don't carry over
-    "search_requested": False,  # set by pressing Enter or clicking Search
 }.items():
     st.session_state.setdefault(key, default)
 
@@ -91,20 +84,11 @@ def save_flashcard(word):
 with tab1:
     st.header("🔎 Dictionary search")
 
-    def request_search():
-        st.session_state.search_requested = True
+    with st.form("search_form"):
+        query = st.text_input("Enter a word to search", placeholder="e.g. resilient")
+        searched = st.form_submit_button("Search")
 
-    # Pressing Enter in the box (on_change) or clicking Search both start a search.
-    query = st.text_input(
-        "Enter a word to search",
-        placeholder="e.g. resilient",
-        on_change=request_search,
-    )
-    if st.button("Search"):
-        request_search()
-
-    if st.session_state.search_requested:
-        st.session_state.search_requested = False
+    if searched:
         try:
             with st.spinner("Looking up the word..."):
                 st.session_state.word = dictionary.lookup(query)
