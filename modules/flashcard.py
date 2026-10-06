@@ -24,8 +24,7 @@ class Flashcard:
     memory_trick: str = ""      # from the Gemini module
     synonyms: list = field(default_factory=list)
     created: str = field(default_factory=lambda: date.today().isoformat())
-    # Spaced repetition: which box the card is in and when it's next due.
-    box: int = 1
+    # When the card is next due, set by SpacedRepetitionManager after a review.
     next_review: str = field(default_factory=lambda: date.today().isoformat())
 
     @classmethod
@@ -42,6 +41,21 @@ class Flashcard:
             memory_trick=ai_content.get("memory_trick", ""),
             synonyms=word.synonyms[:5],
         )
+
+    def is_due(self, today=None):
+        """True if the card should be reviewed today (or is overdue)."""
+        today = today or date.today()
+        return date.fromisoformat(self.next_review) <= today
+
+    def describe_next_review(self, today=None):
+        """A friendly description, e.g. "today", "tomorrow" or "in 4 days"."""
+        today = today or date.today()
+        days = (date.fromisoformat(self.next_review) - today).days
+        if days <= 0:
+            return "today"
+        if days == 1:
+            return "tomorrow"
+        return f"in {days} days"
 
     def to_dict(self):
         """A plain dict, ready to be saved as JSON."""
@@ -63,6 +77,11 @@ class FlashcardDeck:
     def all(self):
         """Every saved card, as Flashcard objects, in the order they were saved."""
         return [Flashcard.from_dict(item) for item in self.data.get_flashcards()]
+
+    def due_cards(self, today=None):
+        """Cards due today or earlier, the most overdue first."""
+        due = [card for card in self.all() if card.is_due(today)]
+        return sorted(due, key=lambda card: card.next_review)
 
     def get(self, word):
         for card in self.all():

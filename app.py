@@ -1,15 +1,17 @@
 # ------ Vocabulary Builder & Smart Flashcards ------
 # Run with:  streamlit run app.py
 
+from datetime import date, datetime
+
 import streamlit as st
 
 from modules.dictionary_api import DictionaryAPIError, DictionaryClient, WordNotFoundError
 from modules.flashcard import Flashcard, FlashcardDeck
 from modules.gemini_api import AIContentGenerator
 from modules.quiz import QuizError, QuizGenerator
-from modules.spaced_repetition import SpacedRepetitionManager
 from modules.storage import DataManager, StorageError
 from modules.validation import InvalidWordError
+from SpacedRepetitionManager import SpacedRepetitionManager
 
 st.set_page_config(page_title="Vocabulary Builder", page_icon="📚")
 
@@ -21,10 +23,10 @@ st.set_page_config(page_title="Vocabulary Builder", page_icon="📚")
 @st.cache_resource
 def get_services():
     ai = AIContentGenerator()
-    return DictionaryClient(), ai, QuizGenerator(ai), SpacedRepetitionManager()
+    return DictionaryClient(), ai, QuizGenerator(ai)
 
 
-dictionary, ai, quiz_maker, scheduler = get_services()
+dictionary, ai, quiz_maker = get_services()
 data = DataManager()
 deck = FlashcardDeck(data)
 
@@ -127,7 +129,7 @@ with tab1:
 with tab2:
     st.header("🃏 Flashcards & Review")
     cards = deck.all()
-    due = scheduler.due_cards(cards)
+    due = deck.due_cards()
 
     col1, col2 = st.columns(2)
     col1.metric("Saved words", len(cards))
@@ -140,7 +142,7 @@ with tab2:
         st.success("Nothing to review today. Come back tomorrow!")
     else:
         card = due[0]
-        st.caption(f"{len(due)} card(s) left to review today · box {card.box}")
+        st.caption(f"{len(due)} card(s) left to review today")
         st.markdown(f"## {card.word}")
         if card.phonetic:
             st.write(card.phonetic)
@@ -158,11 +160,21 @@ with tab2:
             if card.memory_trick:
                 st.info(f"💡 {card.memory_trick}")
 
-            left, right = st.columns(2)
-            remembered = left.button("✅ I remembered", width="stretch")
-            forgot = right.button("❌ I forgot", width="stretch")
-            if remembered or forgot:
-                scheduler.review(card, remembered=remembered)
+            st.write("How well did you remember it?")
+            easy_col, medium_col, hard_col = st.columns(3)
+            rating = None
+            if easy_col.button("😀 Easy (7 days)", width="stretch"):
+                rating = "easy"
+            if medium_col.button("🙂 Medium (4 days)", width="stretch"):
+                rating = "medium"
+            if hard_col.button("😓 Hard (1 day)", width="stretch"):
+                rating = "hard"
+
+            if rating:
+                manager = SpacedRepetitionManager(
+                    date.today().isoformat(), datetime.now().strftime("%H:%M")
+                )
+                card.next_review = manager.schedule_review(rating).date().isoformat()
                 try:
                     deck.update(card)
                 except StorageError as error:
@@ -173,7 +185,7 @@ with tab2:
 
     st.subheader("All saved flashcards")
     for card in cards:
-        with st.expander(f"{card.word} · next review {scheduler.describe_next_review(card)}"):
+        with st.expander(f"{card.word} · next review {card.describe_next_review()}"):
             st.write(f"**Definition:** {card.definition}")
             if card.explanation:
                 st.write(f"**In simple words:** {card.explanation}")
@@ -183,7 +195,7 @@ with tab2:
                 st.write(f"**Memory trick:** {card.memory_trick}")
             if card.synonyms:
                 st.write(f"**Synonyms:** {', '.join(card.synonyms)}")
-            st.caption(f"Saved {card.created} · box {card.box}")
+            st.caption(f"Saved {card.created}")
             if st.button("Delete", key=f"delete_{card.word}"):
                 try:
                     deck.remove(card.word)

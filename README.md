@@ -33,7 +33,7 @@ The app still works without a key: dictionary search, flashcards and reviews wor
 | `modules/dictionary_api.py` | `Word` and `DictionaryClient`: looks words up in the Free Dictionary API with `requests` |
 | `modules/gemini_api.py` | `AIContentGenerator`: simple explanations, example sentences, memory tricks and quiz questions from Gemini |
 | `modules/flashcard.py` | `Flashcard` and `FlashcardDeck`: creating, saving and loading flashcards |
-| `modules/spaced_repetition.py` | `SpacedRepetitionManager`: Leitner boxes (review after 1, 2, 4, 7, 14, 30 days) |
+| `SpacedRepetitionManager.py` | `SpacedRepetitionManager`: schedules the next review from the rating (easy 7 days, medium 4, hard 1) |
 | `modules/quiz.py` | `QuizGenerator`: builds quizzes, shuffles options, checks answers and scores |
 | `modules/storage.py` | `DataManager`: saves flashcards and quiz scores in `data.json` |
 | `modules/validation.py` | regular expressions to validate words and clean text |
