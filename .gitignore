@@ -8,3 +8,7 @@ __pycache__/
 # Virtual environment folders
 .venv/
 venv/
+
+# Temporary and backup files made by modules/storage.py
+data.json.tmp
+data.json.damaged
