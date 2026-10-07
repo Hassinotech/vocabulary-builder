@@ -8,12 +8,20 @@ class SpacedRepetitionManager:
         self.time = time
 
     def convert_date(self, date):
-        return datetime.datetime.strptime(date, "%Y-%m-%d")
+        try:
+            return datetime.datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return None
 
     def convert_time(self, time):
-        return datetime.datetime.strptime(time, "%H:%M")
+        try:
+            return datetime.datetime.strptime(time, "%H:%M")
+        except ValueError:
+            return None
 
     def schedule_review(self, rating):
+
+        rating = rating.lower()
 
         if rating == "easy":
             day = 7
@@ -28,6 +36,9 @@ class SpacedRepetitionManager:
             return "Invalid rating"
 
         current_date = self.convert_date(self.date)
+
+        if current_date is None:
+            return "Invalid date"
 
         next_review = current_date + datetime.timedelta(days=day)
 
